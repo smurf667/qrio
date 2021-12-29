@@ -21,6 +21,10 @@ also be realized in JavaScript. An example can be found
 [here](https://smurf667.github.io/qrio). Both generator and reader can
 be used in combination with their respective Java-based counterparts.
 
+Go there on your mobile phone, too:
+
+![JavaScript demo](screens/url.png)
+
 ## Building the tools
 
 To build the tools run
