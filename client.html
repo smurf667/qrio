@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>JS-based webcam reader for qrio</title>
+    <style>
+      .topright {
+        position: absolute;
+        top: 16px;
+        align-items: center;
+        width: auto;
+        height: 100%;
+        overflow: 'hidden';
+      }
+      #video {
+        z-index: -16;
+      }
+      #frame {
+        z-index: -8;
+      }
+      #size {
+        font-weight: bold;
+        color: red;
+        background-color: black;
+      }
+  </style>
+  </head>
+  <body>
+    <!-- see https://github.com/nimiq/qr-scanner -->
+    <script src="https://cdn.jsdelivr.net/npm/qr-scanner@1.3.0/qr-scanner.umd.min.js" integrity="sha256-9MELwMQTIue1iGGeA6c2/4X62FGsTxBEScdDoPNnNaQ=" crossorigin="anonymous"></script>
+    <h2>Demo for qrio using only client-side code to read a video sequence of QR codes</h2>
+    <p>See the <a href="https://github.com/smurf667/qrio">project on GitHub</a>. No data leaves the client.</p>
+    <p>To produce a QR code sequence for a file, use the Java-based tool, or the
+      <a href="https://smurf667.github.io/qrio">JavaScript-based example</a>.
+    </p>
+    <table>
+      <tr>
+        <td>Available cameras</td>
+        <td><select id="cameras"></select></td>
+      </tr>
+      <tr>
+        <td></td>
+        <td>
+          <input type="submit" id="start" value="start webcam">
+          <input type="submit" id="stop" value="stop webcam" style="display: none;">
+        </td>
+      </tr>
+      <tr>
+        <td>Beep on receive</td>
+        <td>
+          <input type="checkbox" id="confirm" checked>
+        </td>
+      </tr>
+      <tr>
+        <td>File name</td>
+        <td>
+          <input type="text" id="filename" value="file.data">
+        </td>
+      </tr>
+      <tr id="controls" style="display: none;">
+        <td id="size">0 bytes</td>
+        <td>
+          <input type="submit" id="save" value="save">
+          <input type="submit" id="reset" value="reset">
+        </td>
+      </tr>
+    </table>
+    <video id="video" class="topright"></video>
+    <svg id="frame" class="topright">
+      <rect id="area" style="stroke-width:3;stroke:white;fill:none;" />
+    </svg>
+    <script>
+      let wakeLock;
+      const lock = async () => {
+        if (!wakeLock && navigator.wakeLock) {
+          try {
+            wakeLock = await navigator.wakeLock.request('screen');
+            wakeLock.addEventListener('release', () => {
+              wakeLock = undefined;
+            });
+            document.addEventListener('visibilitychange', async () => {
+              if (!wakeLock && document.visibilityState === 'visible') {
+                lock();
+              }
+            });
+          } catch (err) {
+            console.log('no wake lock', err);
+          }
+        }
+      }
+      lock();
+      let data = [];
+      let lastFrame = undefined;
+      let lastBytes = undefined;
+      const encoder = new TextEncoder();
+      const area = document.querySelector('#area');
+      const video = document.querySelector('#video');
+      const start = document.querySelector('#start');
+      const stop = document.querySelector('#stop');
+      const confirm = document.querySelector('#confirm');
+      const controls = document.querySelector('#controls');
+      const size = document.querySelector('#size');
+      const resetElem = document.querySelector('#reset');
+      const save = document.querySelector('#save');
+      const showSize = () => {
+        size.innerText = `${data.length} bytes`;
+        if (data.length > 0) {
+          save.removeAttribute('disabled');
+          resetElem.removeAttribute('disabled');
+        } else {
+          save.setAttribute('disabled', 'disabled');
+          resetElem.setAttribute('disabled', 'disabled');
+        }
+      }
+      const audioCtx = new AudioContext();
+      const beep = () => {
+        if (confirm.checked) {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.connect(gain);
+          osc.frequency.value = 900;
+          osc.type = 'square';
+          gain.connect(audioCtx.destination);
+          gain.gain.value = 0.1;
+          osc.start(audioCtx.currentTime);
+          osc.stop(audioCtx.currentTime + 0.05);
+        }
+      }
+      const stopCamera = () => {
+        qrScanner.stop();
+        start.style.display = 'block';
+        stop.style.display = 'none';
+        if (data.length === 0) {
+          controls.style.display = 'none';
+        }
+      }
+      const reset = () => {
+        data = [];
+        lastFrame = undefined;
+        lastBytes = undefined;
+        showSize();
+      }
+      const download = () => {
+        const elem = document.createElement('a');
+        elem.setAttribute('href', `data:application/octet-stream;charset=utf-8,${encodeURIComponent(String.fromCharCode(...data))}`);
+        elem.setAttribute('download', document.querySelector('#filename').value);
+        elem.style.display = 'none';
+        document.body.appendChild(elem);
+        elem.click();
+        document.body.removeChild(elem);
+      }
+      const handleNoQrCode = () => {
+        const region = qrScanner._scanRegion;
+        if (region && region.x > 0 && !area.getAttribute('data-set')) {
+          const frame = document.querySelector('#frame');
+          frame.setAttribute('width', video.clientWidth);
+          frame.setAttribute('height', video.clientHeight);
+          frame.setAttribute('viewBox', `0 0 ${video.videoWidth} ${video.videoHeight}`);
+          for (let prop in region) {
+            if (!prop.startsWith('down')) {
+              area.setAttribute(prop, region[prop]);
+            }
+          }
+          area.setAttribute('data-set', 'true');
+        }
+      }
+      const handleQrCode = (str) => {
+        try {
+          while (str.startsWith("!")) {
+            str = str.substring(1);
+          }
+          const bytes = Array.from(encoder.encode(atob(str)));
+          if (bytes.length % 2 === 1) {
+            const count = bytes.shift();
+            if (lastFrame) {
+              if (((lastFrame + 1) % 128) !== count) {
+                console.log('rejecting this frame, it is not the next one', count);
+                return;
+              }
+            }
+            lastFrame = count;
+          }
+          if (lastBytes && lastBytes.length === bytes.length) {
+            if (lastBytes.find((v,i) => v !== bytes[i]) === undefined) {
+              console.log('rejecting this frame, seen before');
+              return;
+            }
+          }
+          lastBytes = bytes;
+          data.push(...bytes);
+          showSize();
+          beep();
+        } catch (err) {
+          // ignore
+          console.log('decode error', err);
+        }
+      }
+      QrScanner.WORKER_PATH = './qr-scanner-worker.min.js';
+      const cameraList = document.querySelector('#cameras');
+      QrScanner.listCameras(true).then(cameras => cameras.forEach(camera => {
+        const option = document.createElement('option');
+        option.value = camera.id;
+        option.text = camera.label;
+        cameraList.add(option);
+      }));
+      const qrScanner = new QrScanner(video, handleQrCode, handleNoQrCode);
+      start.addEventListener('click', () => {
+        qrScanner.setCamera(cameraList.value);
+        qrScanner.start();
+        reset();
+        start.style.display = 'none';
+        stop.style.display = 'block';
+        controls.style.display = 'contents';
+      });
+      stop.addEventListener('click', stopCamera);
+      resetElem.addEventListener('click', () => {
+        reset();
+        stopCamera();
+      });
+      save.addEventListener('click', download);
+   </script>
+  </body>
+</html>
