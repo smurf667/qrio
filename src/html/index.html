@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>JS-based generator for qrio</title>
+    <style>
+      #qrcode {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+      }
+      #qrcode > img {
+        width: 100%;
+        height: auto;
+        image-rendering: pixelated;
+        pointer-events: none;
+        margin: 32px;
+      }
+  </style>
+  </head>
+  <body>
+    <script src="https://cdn.rawgit.com/davidshimjs/qrcodejs/gh-pages/qrcode.min.js"></script>
+    <div id="qrcode"></div>
+    <div id="controls">
+      <h2>Demo for qrio using only client-side code to display a file as a series of QR codes</h2>
+      <p>See the <a href="https://github.com/smurf667/qrio">project on GitHub</a>. No data leaves the client.</p>
+      <p>The displayed QR code sequence can be consumed with the Java-based tool, or with the
+        <a href="client.html">JavaScript-based example</a>. Make sure to size the browser window
+        properly on a desktop.
+      </p>
+      <table>
+        <tr>
+          <td>Bytes per QR code</td>
+          <td><input type="number" id="bytes" min="16" value="128" step="2"></td>
+        </tr>
+        <tr>
+          <td>Dimension</td>
+          <td><input type="number" id="dimension" min="128" value="384" step="2"></td>
+        </tr>
+        <tr>
+          <td>Wait (ms)</td>
+          <td><input type="number" id="wait" min="0" value="500" step="20"><br><small>Use 0 for manual stepping by click/tap.</td>
+        </tr>
+        <tr>
+          <td>Start delay (s)</td>
+          <td><input type="number" id="delay" min="1" value="2"></td>
+        </tr>
+        <tr>
+          <td>Enumerate frames</td>
+          <td><input type="checkbox" id="enumerate"></td>
+        </tr>
+        <tr>
+          <td>File</td>
+          <td><input type="file" id="file"></td>
+        </tr>
+        <tr>
+          <td></td>
+          <td id="actions" style="display: none;"><input type="submit" id="play" value="play"></td>
+        </tr>
+      </table>
+    </div>
+    <script>
+      let wakeLock;
+      const lock = async () => {
+        if (!wakeLock && navigator.wakeLock) {
+          try {
+            wakeLock = await navigator.wakeLock.request('screen');
+            wakeLock.addEventListener('release', () => {
+              wakeLock = undefined;
+            });
+            document.addEventListener('visibilitychange', async () => {
+              if (!wakeLock && document.visibilityState === 'visible') {
+                lock();
+              }
+            });
+          } catch (err) {
+            console.log('no wake lock', err);
+          }
+        }
+      }
+      lock();
+      var qrcode = undefined;
+      var data = undefined;
+      var pos = 0;
+      const tapHandlers = {};
+      const get = (id) => {
+        return parseInt(document
+          .querySelector(`#${id}`)
+          .value);
+      }
+      const show = (dimension, chunk, frame) => {
+        const text = document.querySelector('#enumerate').checked ?
+          String.fromCharCode(frame, ...chunk) :
+          String.fromCharCode(...chunk);
+        if (qrcode) {
+          qrcode.clear();
+          qrcode.makeCode(btoa(text));
+        } else {
+          qrcode = new QRCode(document.querySelector('#qrcode'), {
+            text: btoa(text),
+            width: dimension,
+            height: dimension,
+            correctLevel : QRCode.CorrectLevel.H
+          });
+        }
+        document.querySelector('#qrcode').removeAttribute('title');
+      }
+      const next = (dimension, bytes, wait) => {
+        const chunk = data.slice(pos, pos + bytes);
+        if (chunk.length > 0) {
+          pos += bytes;
+          show(dimension, chunk, (pos / bytes) % 127);
+          if (wait > 0) {
+            setTimeout(() => next(dimension, bytes, wait), wait);
+          }
+        } else {
+          document.body.removeEventListener('mouseup', tapHandlers.mouse);
+          document.body.removeEventListener('touchend', tapHandlers.touch);
+          delete tapHandlers.mouse;
+          delete tapHandlers.touch;
+          document
+            .querySelectorAll('#controls, #actions')
+            .forEach(e => e.style.display = 'block');
+        }
+      }
+      const play = () => {
+        document
+          .querySelectorAll('#controls, #actions')
+          .forEach(e => e.style.display = 'none');
+        const bytes = get('bytes');
+        const dimension = get('dimension');
+        const wait = get('wait');
+        pos = 0;
+        show(dimension, data.slice(0, bytes), 0);
+        if (wait > 0) {
+          setTimeout(() => next(dimension, bytes, wait), 1000 * document.querySelector('#delay').value);
+        } else {
+          tapHandlers.mouse = document.body.addEventListener('mouseup', () => next(dimension, bytes, wait));
+          tapHandlers.touch = document.body.addEventListener('touchend', () => next(dimension, bytes, wait));
+        }
+      }
+      const uploaded = async (evt) => {
+        const buffer = new Uint8Array(await evt.target.files[0].arrayBuffer());
+        const bytes = get('bytes');
+        const dimension = get('dimension');
+        const div = document.querySelector('#qrcode');
+        while (div.firstChild) {
+          div.firstChild.remove();
+        }
+        qrcode = undefined;
+        pos = 0;
+        show(dimension, buffer.slice(0, bytes), 0);
+        data = buffer;
+        document.querySelector('#actions').style.display = 'block';
+      }
+      document
+        .querySelector('#file')
+        .addEventListener('input', evt => uploaded(evt));
+      document
+        .querySelector('#play')
+        .addEventListener('click', evt => play());
+   </script>
+  </body>
+</html>
